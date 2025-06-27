@@ -177,10 +177,12 @@ class GemmKernel:
         num_threads = 128 * (self.num_consumer_warpgroups + self.num_producer_warpgroups)
         block_dim = (num_threads, 1, 1)
 
-        cute.printf("grid: {}", grid)
-        cute.printf("block_dim: {}", block_dim)
+        # cute.printf("grid: {}", grid)
+        # cute.printf("block_dim: {}", block_dim)
         
         # since this kernel uses tma for accessing A and B, it only recieves the tma atoms and tensors
+        # tma tensors contain the coordinates of the tensors that are being accessed in format the tma understands
+        # not the actual tensor data
         self.kernel(
             tma_atom_a,
             tma_tensor_a,
@@ -241,7 +243,7 @@ class GemmKernel:
         
         mainloop_pipeline_producer_group = cutlass.utils.CooperativeGroup(cutlass.utils.Agent.Thread)
         mainloop_pipeline_consumer_group = cutlass.utils.CooperativeGroup(
-            cutlass.utils.Agent.Thread, size = 1
+            cutlass.utils.Agent.Thread, size = 8, alignment = 8
         )
         
         # size of one pipeline stage BM * BK + BN * BK
@@ -347,18 +349,6 @@ class GemmKernel:
         # tCgC : (thread_idx within warpgroup, BM / MMA_M, BN / MMA_N, M / BM, N / BN)
         tCrA = tiled_mma.make_fragment_A(tCsA)
         tCrB = tiled_mma.make_fragment_B(tCsB)
-
-        # if bidz == 0 and tidx == 0:
-        #     cute.printf("--------------------------------")
-        #     cute.printf("thr_mma: "); cute.printf(str(thr_mma)) # shouldnt second mode be 2?
-        #     cute.printf("tCsA: "); cute.printf(str(tCsA.layout)) # ((64,16),2,4,(1,4)):((64,1),4096,16,(0,8192)) # ((MMA_M, MMA_K), BM / MMA_M, BK / MMA_K, pipeline_stages)
-        #     cute.printf("tCsB: "); cute.printf(str(tCsB.layout)) # ((256,16),1,4,(1,4)):((64,1),0,16,(0,16384)) # ((MMA_N, MMA_K), BN / MMA_N, BK / MMA_K, pipeline_stages)
-        #     cute.printf("tCrA: "); cute.printf(str(tCrA.layout)) # (1,1,4,(1,4)):(0,0,2,(0,1024))
-        #     cute.printf("tCrB: "); cute.printf(str(tCrB.layout)) # (1,1,4,(1,4)):(0,0,2,(0,2048))
-        #     cute.printf("C_tiled: "); cute.printf(str(C_tiled.layout))
-        #     cute.printf("tCgC: "); cute.printf(str(tCgC.layout)) # ((2,2,32),1,1,64,32):((1,65536,8),0,0,1048576,256)
-        #     cute.printf("--------------------------------")
-        
         
         consumer_state = cutlass.utils.make_pipeline_state(cutlass.utils.PipelineUserType.Consumer, self.PIPELINE_STAGES)
         producer_state = cutlass.utils.make_pipeline_state(cutlass.utils.PipelineUserType.Producer, self.PIPELINE_STAGES)
@@ -381,9 +371,6 @@ class GemmKernel:
                     tile_n = current_tile_coord[1]
                     coord_k = current_tile_coord[2]
 
-                    # if (tidx == 0 or tidx == 256):
-                    #     cute.printf("producer {} started {}", bidz, current_tile_coord)
-
                     for tile_k in cutlass.range_dynamic(num_tiles_k):                            
                         # block until this stage is ready to be written to
                         # call empty_barrier.wait(producer_state.index, producer_state.phase)
@@ -393,13 +380,7 @@ class GemmKernel:
                         #   which tells the barrier to expect tx_count_bytes bytes to be written. Since the
                         #   barrier is of type tma op, we never arrive at it, the arrival count is not used
                         
-                        # if bidz == 68 and (tidx == 0 or tidx == 256):
-                        #     cute.printf("producer acquire, producer tile_m: {}, producer tile_n: {}, producer tile_k: {}, producer_state.index: {}, producer_state.phase: {}", tile_m, tile_n, tile_k, producer_state.index, producer_state.phase)
-                        
                         mainloop_pipeline.producer_acquire(producer_state)
-
-                        # if bidz == 68 and (tidx == 0 or tidx == 256):
-                        #     cute.printf("producer acquire done")
 
                         # get the k slice of A and B that we are going to read from gmem
                         # and the corresponding stage of the shared memory buffer that are going to be written to
@@ -448,20 +429,9 @@ class GemmKernel:
                             mcast_mask=0
                         )
 
-                        # if bidz == 68 and (tidx == 0 or tidx == 256):
-                        #     cute.printf("producer commit, producer tile_m: {}, producer tile_n: {}, producer tile_k: {}, producer_state.index: {}, producer_state.phase: {}", tile_m, tile_n, tile_k, producer_state.index, producer_state.phase)
-
                         mainloop_pipeline.producer_commit(producer_state)
-
-                        # if bidz == 68 and (tidx == 0 or tidx == 256):
-                        #     cute.printf("producer commit done")
-
                         
                         producer_state.advance()
-
-
-                    if (tidx == 0 or tidx == 256):
-                        cute.printf("producer {} finished {}", bidz, current_tile_coord)
                     
                     # producer_state.count is the number of tiles that have been processes
                     # producer_state.index is the current pipeline stage
@@ -471,22 +441,6 @@ class GemmKernel:
                     producer_state.reset_count()
                     tile_sched.advance_to_next_work()
                     work_tile = tile_sched.get_current_work()
-
-                # wait until all buffers are empty
-                # mainloop_pipeline.producer_tail(producer_state)
-
-                # if (tidx == 0 or tidx == 256):
-                #     cute.printf("PRODUCER EXIT")
-
-                # if bidz == 0 and tidx == 0:
-                #     cute.printf("--------------------------------")
-                #     cute.printf("tAgA_k: {}", tAgA_k.layout)
-                #     cute.printf("tAsA_stage: {}", tAsA_stage.layout)
-                #     cute.printf("tBgB_k: {}", tBgB_k.layout)
-                #     cute.printf("tBsB_stage: {}", tBsB_stage.layout)
-                #     cute.printf("--------------------------------")
-        
-
         
         if is_consumer:
 
@@ -510,20 +464,15 @@ class GemmKernel:
                 tile_n = current_tile_coord[1]
                 coord_k = current_tile_coord[2]
 
-                # if (tidx == 0 or tidx == 256):
-                #     cute.printf("consumer {} started {}", bidz, current_tile_coord)
-
                 for tile_k in cutlass.range_dynamic(num_tiles_k):
-
-                    # if bidz == 68 and (tidx == 0 or tidx == 256):
-                    #     cute.printf("consumer wait, consumer tile_m: {}, consumer tile_n: {}, consumer tile_k: {}, consumer_state.index: {}, consumer_state.phase: {}", tile_m, tile_n, tile_k, consumer_state.index, consumer_state.phase)
-
                     
                     # wait at the full barrier, until the expected number of bytes have been written
+                    # this patch is required for the kernel to not deadlock
+                    # because of the implemenentation of PipelineTmaAsync, as of version 4.0.0 only a single thread
+                    # arrives at the full barrier. This is results in deadlock if more than one consumer warpgroup is used
+                    # using more than one consumer warpgroup requires this patch
+                    # https://github.com/NVIDIA/cutlass/issues/2404#issuecomment-2993373857
                     mainloop_pipeline.consumer_wait(consumer_state)
-
-                    # if bidz == 68 and (tidx == 0 or tidx == 256):
-                    #     cute.printf("consumer wait done")
                         
                     cute.nvgpu.warpgroup.fence()
                     for mma_k in range(mma_k_per_block_k):
@@ -549,17 +498,8 @@ class GemmKernel:
                     cute.nvgpu.warpgroup.commit_group()
                     cute.nvgpu.warpgroup.wait_group(0)
                     
-                    # the signalling thread calls cute.arch.mbarrier_arrive of the empty barrier
-                    # since the arrival count of the empty barrier is 1, this is all we need to proceed
-                    
-                    # if bidz == 68 and (tidx == 0 or tidx == 256):
-                    #     cute.printf("consumer release, consumer tile_m: {}, consumer tile_n: {}, consumer tile_k: {}, consumer_state.index: {}, consumer_state.phase: {}", tile_m, tile_n, tile_k, consumer_state.index, consumer_state.phase)
-                    
                     mainloop_pipeline.consumer_release(consumer_state)
 
-                    # if bidz == 68 and (tidx == 0 or tidx == 256):
-                    #     cute.printf("consumer release done")
-                    
                     consumer_state.advance()
 
                 store_copy = cute.make_copy_atom(cute.nvgpu.CopyUniversalOp(), self.accumulator_dtype)
@@ -567,12 +507,6 @@ class GemmKernel:
                 
                 tile_sched.advance_to_next_work()
                 work_tile = tile_sched.get_current_work()
-
-                if (tidx == 0 or tidx == 256):
-                    cute.printf("consumer {} finished {}", bidz, current_tile_coord)
-            
-            # if (tidx == 0 or tidx == 256):
-            #     cute.printf("CONSUMER EXIT")
             
 
 
@@ -614,24 +548,37 @@ if __name__ == "__main__":
     torch_stream = torch.cuda.Stream()
     stream = cuda.CUstream(torch_stream.cuda_stream)
     compiled_gemm = cute.compile(gemm, gA, gB, gC, stream)
-
     torch_stream.synchronize()
 
-    for i in range(1):
-        print(f"iteration {i}")
-        compiled_gemm(gA, gB, gC, stream)
-
+    # test correctness
+    compiled_gemm(gA, gB, gC, stream)
     C = C.to(torch.bfloat16)
-
     C_ref = torch.matmul(A, B.t())
-
-    diff = C - C_ref
-    incorrect_indices_row, incorrect_indices_col = torch.where(diff != 0)
-    unique_incorrect_indices = torch.unique(incorrect_indices_row)
-    print(unique_incorrect_indices)
     assert torch.allclose(C, C_ref, atol=1e-3)
+
+    # test performance
+    num_iters = 50
+    torch.cuda.synchronize()
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+    start_event.record(stream = torch_stream)
+    for i in range(num_iters):
+        compiled_gemm(gA, gB, gC, stream)
+    end_event.record(stream = torch_stream)
+    torch.cuda.synchronize()
+    elapsed_ms = start_event.elapsed_time(end_event)
+    print(f"elapsed_ms: {elapsed_ms}")
+    elapsed_ms = elapsed_ms / num_iters
+
+    flops = 2 * M * N * K
+    tflops_per_s = (flops / 1e12) / (elapsed_ms / 1000)
+    print(f"elapsed_ms: {elapsed_ms}")
+    print(f"tflops_per_s: {tflops_per_s}")
+
+    # tflops_per_s: 357.51529606255616
+
     
-    # print("test passed")
+
     
     
     
