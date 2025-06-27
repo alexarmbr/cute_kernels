@@ -17,8 +17,9 @@ os.environ["CUTE_DSL_ARCH"] = "sm_90a"
 # 1. must use 1 warpgroup per BLOCK_M / MMA_M, results are slightly incorrect otherwise, not sure of why this is
 # 2. warpgroup 0 must be a consumer warpgroup, because of async pipeline implementation
 
-# this kernel has a heisenbug, I think where producer/consumer get out of sync because barriers are using an arrival count of 1
-# printing at the end of each persistent kernel iteration seems to fix it. The async pipeline implementation requires an arrival
+# see
+# https://github.com/NVIDIA/cutlass/issues/2404#issuecomment-2993373857
+
 class GemmKernel:
     def __init__(self):
         self.num_consumer_warpgroups = 2
